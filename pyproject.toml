@@ -1,0 +1,21 @@
+[tool.poetry]
+authors = ["Gabriele N. Tornetta <phoenix1987@gmail.com>"]
+description = "Python project dependency crawler"
+include = ["betsy/assets/*"]
+license = "GPL3+"
+name = "betsy"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+graphviz = "^0.19.1"
+python = "^3.7"
+
+[tool.poetry.dev-dependencies]
+pytest = "^6.2.5"
+
+[tool.poetry.scripts]
+betsy = 'betsy:main'
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=1.0.0"]
