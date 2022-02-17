@@ -4,7 +4,7 @@ description = "Python project dependency crawler"
 include = ["betsy/assets/*"]
 license = "GPL3+"
 name = "betsy"
-version = "0.1.0"
+version = "0.2.0"
 
 [tool.poetry.dependencies]
 graphviz = "^0.19.1"

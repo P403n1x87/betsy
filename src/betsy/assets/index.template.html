@@ -10,6 +10,11 @@
         fill: #bbb;
     }
 
+    #tooltip {
+        color: #bbb;
+        font: 300 16px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
     .node:hover {
         fill: rgb(212, 80, 224);
     }
@@ -105,6 +110,13 @@
             .attr("alignment-baseline", "middle").attr("fill", "#bbb")
             .text("imported by").style("font-size", "11px")
 
+        var tooltip = d3.select("body")
+            .append("div")
+            .attr("id", "tooltip")
+            .style("position", "fixed")
+            .style("z-index", "10")
+            .style("visibility", "hidden")
+            .text("a simple tooltip");
 
         var svg = d3.select("body").append("svg")
             .attr("id", "bundle")
@@ -158,6 +170,10 @@
             node
                 .classed("node--target", function (n) { return n.target; })
                 .classed("node--source", function (n) { return n.source; });
+
+            tooltip
+                .text(d.data.name)
+                .style("visibility", "visible");
         }
 
         function mouseouted(d) {
@@ -168,6 +184,9 @@
             node
                 .classed("node--target", false)
                 .classed("node--source", false);
+
+            tooltip
+                .style("visibility", "hidden");
         }
 
         // Lazily construct the package hierarchy from class names.
@@ -183,7 +202,8 @@
                         if (node.parent.children === undefined)
                             node.parent.children = [];
                         node.parent.children.push(node);
-                        node.key = name
+                        node.key = name.substring(i + 1);
+                        node.name = name;
                     }
                 }
                 return node;

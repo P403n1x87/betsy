@@ -172,6 +172,10 @@ class DependencyGraph:
 
         graph.render(dest, view=True)
 
+    @property
+    def depth(self):
+        return max(_.count(".") for _ in self.data)
+
 
 def main():
     argp = ArgumentParser(
@@ -227,7 +231,7 @@ def main():
         page = INDEX_TEMPLATE.replace(
             "var classes = []", f"var classes = {graph.to_json()}"
         )
-        diameter = 600 + len(graph.data) * 4
+        diameter = 600 + max(len(graph.data) * 4, graph.depth * 160)
         page = page.replace("var diameter = 800", f"var diameter = {diameter}")
         output.write(page)
 
