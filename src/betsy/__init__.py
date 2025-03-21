@@ -44,14 +44,14 @@ class ImportVisitor(ast.NodeVisitor):
         self.imports |= {tuple(alias.name.split(".")) for alias in node.names}
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
-        module = node.module.split(".") if node.module else []
+        module = tuple(node.module.split(".") if node.module else [])
         if not node.level:
-            self.imports.add(tuple(module))
+            self.imports.add(module)
         else:
-            assert node.level <= len(
-                self.base
-            ), f"valid relative import from {node.module} at level {node.level} (base {self.base})"
-            self.imports.add(tuple(list(self.base)[: -node.level] + module))
+            assert node.level <= len(self.base), (
+                f"valid relative import from {node.module} at level {node.level} (base {self.base})"
+            )
+            self.imports.add((*(self.base[: -node.level + 1]), *module))
 
 
 def _path_to_module_path(path: Path, root: Path) -> ModulePath:
@@ -71,16 +71,23 @@ def _path_to_module_path(path: Path, root: Path) -> ModulePath:
 
 
 def _get_imports(source: str, base: ModulePath) -> t.Set[ModulePath]:
+    # root = base[0]
     visitor = ImportVisitor(base)
     visitor.visit(ast.parse(source))
     return visitor.imports
+    # return {_ for _ in visitor.imports if _[0] == root}
+
+
+def _is_module(path: ModulePath, root: Path) -> bool:
+    base = root.parent / Path(*path)
+    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
 
 
 def get_imports(source_file: Path, root: Path) -> t.Set[str]:
     assert source_file.suffix == ".py"
     with source_file.open() as f:
         return {
-            ".".join(module)
+            ".".join(module if _is_module(module, root) else module[:-1])
             for module in _get_imports(
                 f.read(), _path_to_module_path(source_file, root)
             )
