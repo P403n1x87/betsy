@@ -35,9 +35,10 @@ ModulePath = t.Tuple[str, ...]
 
 
 class ImportVisitor(ast.NodeVisitor):
-    def __init__(self, base: ModulePath) -> None:
+    def __init__(self, base: ModulePath, is_package: bool = False) -> None:
         super().__init__()
         self.base = base
+        self.is_package = is_package
         self.imports: t.Set[ModulePath] = set()
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -48,10 +49,12 @@ class ImportVisitor(ast.NodeVisitor):
         if not node.level:
             self.imports.add(module)
         else:
-            assert node.level <= len(self.base), (
-                f"valid relative import from {node.module} at level {node.level} (base {self.base})"
+            package = self.base if self.is_package else self.base[:-1]
+            index = len(package) - (node.level - 1)
+            assert index >= 0, (
+                f"invalid relative import from {node.module} at level {node.level} (base {self.base})"
             )
-            self.imports.add((*(self.base[: -node.level + 1]), *module))
+            self.imports.add((*package[:index], *module))
 
 
 def _path_to_module_path(path: Path, root: Path) -> ModulePath:
@@ -70,9 +73,9 @@ def _path_to_module_path(path: Path, root: Path) -> ModulePath:
     return tuple(module)
 
 
-def _get_imports(source: str, base: ModulePath) -> t.Set[ModulePath]:
+def _get_imports(source: str, base: ModulePath, is_package: bool = False) -> t.Set[ModulePath]:
     # root = base[0]
-    visitor = ImportVisitor(base)
+    visitor = ImportVisitor(base, is_package)
     visitor.visit(ast.parse(source))
     return visitor.imports
     # return {_ for _ in visitor.imports if _[0] == root}
@@ -89,7 +92,9 @@ def get_imports(source_file: Path, root: Path) -> t.Set[str]:
         return {
             ".".join(module if _is_module(module, root) else module[:-1])
             for module in _get_imports(
-                f.read(), _path_to_module_path(source_file, root)
+                f.read(),
+                _path_to_module_path(source_file, root),
+                is_package=source_file.stem == "__init__",
             )
         }
 
