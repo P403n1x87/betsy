@@ -50,7 +50,10 @@ class ImportVisitor(ast.NodeVisitor):
             # Absolute: from X.Y import Z — Z may be a submodule of X.Y; emit per-alias
             # so _is_module can distinguish submodule from attribute in get_imports.
             for alias in node.names:
-                self.imports.add((*module, alias.name))
+                if alias.name == "*":
+                    self.imports.add(module)
+                else:
+                    self.imports.add((*module, alias.name))
         else:
             package = self.base if self.is_package else self.base[:-1]
             index = len(package) - (node.level - 1)
@@ -61,7 +64,10 @@ class ImportVisitor(ast.NodeVisitor):
             else:
                 # from . import X, Y — each name may be a submodule or a re-exported name
                 for alias in node.names:
-                    self.imports.add((*package[:index], alias.name))
+                    if alias.name == "*":
+                        self.imports.add(package[:index])
+                    else:
+                        self.imports.add((*package[:index], alias.name))
 
 
 def _path_to_module_path(path: Path, root: Path) -> ModulePath:
