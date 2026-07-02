@@ -76,9 +76,17 @@ def test_visit_import_records_multiple_names():
 
 
 def test_visit_import_from_absolute():
+    # Each imported name is emitted as a candidate submodule path so that
+    # get_imports/_is_module can decide whether it is a real submodule.
     visitor = ImportVisitor(base=("pkg", "mod_a"))
     visitor.visit(__import__("ast").parse("from pkg.sub import mod_e\n"))
-    assert visitor.imports == {("pkg", "sub")}
+    assert visitor.imports == {("pkg", "sub", "mod_e")}
+
+
+def test_visit_import_from_absolute_multiple_names():
+    visitor = ImportVisitor(base=("pkg", "mod_a"))
+    visitor.visit(__import__("ast").parse("from pkg.sub import mod_e, SomeClass\n"))
+    assert visitor.imports == {("pkg", "sub", "mod_e"), ("pkg", "sub", "SomeClass")}
 
 
 def test_visit_import_from_relative_level_1_from_module():
@@ -95,11 +103,18 @@ def test_visit_import_from_relative_level_2_from_submodule():
 
 
 def test_visit_import_from_relative_within_package_init():
-    # "from .. import mod_a" carries no module in the AST, so only the
-    # resolved parent package is recorded, not the imported name itself.
+    # "from .. import mod_a" — no explicit module, so each alias name is emitted
+    # as a candidate so _is_module can resolve submodule vs re-exported attribute.
     visitor = ImportVisitor(base=("pkg", "sub"), is_package=True)
     visitor.visit(__import__("ast").parse("from .. import mod_a\n"))
-    assert visitor.imports == {("pkg",)}
+    assert visitor.imports == {("pkg", "mod_a")}
+
+
+def test_visit_import_from_relative_no_module_multiple_names():
+    # from . import X, Y — each alias gets its own candidate path
+    visitor = ImportVisitor(base=("pkg", "sub"), is_package=True)
+    visitor.visit(__import__("ast").parse("from . import mod_d, mod_e\n"))
+    assert visitor.imports == {("pkg", "sub", "mod_d"), ("pkg", "sub", "mod_e")}
 
 
 def test_visit_import_from_invalid_level_raises():
@@ -150,6 +165,23 @@ def test_is_module_false_for_unknown(pkg_root: Path):
     assert _is_module(("pkg", "does_not_exist"), pkg_root) is False
 
 
+def test_is_module_true_for_pyi_stub(pkg_root: Path):
+    # A .pyi stub without a .py file represents a native extension module.
+    (pkg_root / "native_ext.pyi").write_text("")
+    assert _is_module(("pkg", "native_ext"), pkg_root) is True
+
+
+def test_is_module_true_for_so_extension(pkg_root: Path):
+    # A versioned .so file (e.g. Cython/C extension) is a real module.
+    (pkg_root / "native_ext.cpython-312-darwin.so").write_text("")
+    assert _is_module(("pkg", "native_ext"), pkg_root) is True
+
+
+def test_is_module_true_for_pyd_extension(pkg_root: Path):
+    (pkg_root / "native_ext.pyd").write_text("")
+    assert _is_module(("pkg", "native_ext"), pkg_root) is True
+
+
 # -- get_imports -----------------------------------------------------------
 
 
@@ -161,18 +193,38 @@ def test_get_imports_rejects_non_python_file(tmp_path: Path):
 
 
 def test_get_imports_top_level_module(pkg_root: Path):
+    # "from . import mod_c" now resolves to pkg.mod_c (not the parent pkg).
     imports = get_imports(pkg_root / "mod_a.py", pkg_root)
-    assert imports == {"pkg", "pkg.mod_b", "pkg.mod_c"}
+    assert imports == {"pkg.mod_b", "pkg.mod_c"}
 
 
 def test_get_imports_package_init(pkg_root: Path):
+    # "from .. import mod_a" now resolves to pkg.mod_a (not just pkg).
     imports = get_imports(pkg_root / "sub" / "__init__.py", pkg_root)
-    assert imports == {"pkg"}
+    assert imports == {"pkg.mod_a"}
 
 
 def test_get_imports_nested_module(pkg_root: Path):
+    # "from . import mod_e" now resolves to pkg.sub.mod_e (not pkg.sub).
     imports = get_imports(pkg_root / "sub" / "mod_d.py", pkg_root)
-    assert imports == {"pkg.mod_a", "pkg.sub"}
+    assert imports == {"pkg.mod_a", "pkg.sub.mod_e"}
+
+
+def test_get_imports_absolute_non_module_name_falls_back_to_parent(pkg_root: Path):
+    # "from pkg.mod_b import SomeClass" — SomeClass is not a module,
+    # so get_imports falls back to recording pkg.mod_b (the from-module).
+    (pkg_root / "consumer.py").write_text("from pkg.mod_b import SomeClass\n")
+    imports = get_imports(pkg_root / "consumer.py", pkg_root)
+    assert imports == {"pkg.mod_b"}
+
+
+def test_get_imports_native_extension_via_pyi(pkg_root: Path):
+    # Importing from a native extension (represented by a .pyi stub) should
+    # record the extension module itself, not fall back to its parent package.
+    (pkg_root / "native_ext.pyi").write_text("")
+    (pkg_root / "consumer.py").write_text("from pkg.native_ext import Symbol\n")
+    imports = get_imports(pkg_root / "consumer.py", pkg_root)
+    assert imports == {"pkg.native_ext"}
 
 
 # -- DependencyGraph ------------------------------------------------------------
@@ -195,11 +247,11 @@ def test_dependency_graph_data(pkg_root: Path):
     graph = DependencyGraph(pkg_root)
     assert graph.data == {
         "pkg": set(),
-        "pkg.mod_a": {"pkg", "pkg.mod_b", "pkg.mod_c"},
+        "pkg.mod_a": {"pkg.mod_b", "pkg.mod_c"},
         "pkg.mod_b": set(),
         "pkg.mod_c": set(),
-        "pkg.sub": {"pkg"},
-        "pkg.sub.mod_d": {"pkg.mod_a", "pkg.sub"},
+        "pkg.sub": {"pkg.mod_a"},
+        "pkg.sub.mod_d": {"pkg.mod_a", "pkg.sub.mod_e"},
         "pkg.sub.mod_e": set(),
     }
 
@@ -232,7 +284,7 @@ def test_dependency_graph_to_json(pkg_root: Path):
     )
     # every importer entry carries its recorded imports
     by_name = {entry["name"]: set(entry["imports"]) for entry in payload}
-    assert by_name["pkg.mod_a"] == {"pkg", "pkg.mod_b", "pkg.mod_c"}
+    assert by_name["pkg.mod_a"] == {"pkg.mod_b", "pkg.mod_c"}
 
 
 # -- main / CLI -----------------------------------------------------------------

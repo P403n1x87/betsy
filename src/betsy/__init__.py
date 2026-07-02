@@ -47,12 +47,21 @@ class ImportVisitor(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = tuple(node.module.split(".") if node.module else [])
         if not node.level:
-            self.imports.add(module)
+            # Absolute: from X.Y import Z — Z may be a submodule of X.Y; emit per-alias
+            # so _is_module can distinguish submodule from attribute in get_imports.
+            for alias in node.names:
+                self.imports.add((*module, alias.name))
         else:
             package = self.base if self.is_package else self.base[:-1]
             index = len(package) - (node.level - 1)
             assert index >= 0, f"invalid relative import from {node.module} at level {node.level} (base {self.base})"
-            self.imports.add((*package[:index], *module))
+            if module:
+                # from .mod import X — depends on the submodule .mod
+                self.imports.add((*package[:index], *module))
+            else:
+                # from . import X, Y — each name may be a submodule or a re-exported name
+                for alias in node.names:
+                    self.imports.add((*package[:index], alias.name))
 
 
 def _path_to_module_path(path: Path, root: Path) -> ModulePath:
@@ -81,7 +90,13 @@ def _get_imports(source: str, base: ModulePath, is_package: bool = False) -> set
 
 def _is_module(path: ModulePath, root: Path) -> bool:
     base = root.parent / Path(*path)
-    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
+    return (
+        base.with_suffix(".py").is_file()
+        or (base / "__init__.py").is_file()
+        or base.with_suffix(".pyi").is_file()
+        or any(base.parent.glob(f"{base.name}*.so"))
+        or any(base.parent.glob(f"{base.name}*.pyd"))
+    )
 
 
 def get_imports(source_file: Path, root: Path) -> set[str]:
