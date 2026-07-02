@@ -22,11 +22,7 @@ def pkg_root(tmp_path: Path) -> Path:
     pkg = root / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
-    (pkg / "mod_a.py").write_text(
-        "import pkg.mod_b\n"
-        "from . import mod_c\n"
-        "from .mod_c import thing\n"
-    )
+    (pkg / "mod_a.py").write_text("import pkg.mod_b\nfrom . import mod_c\nfrom .mod_c import thing\n")
     (pkg / "mod_b.py").write_text("")
     (pkg / "mod_c.py").write_text("")
 
@@ -231,9 +227,9 @@ def test_dependency_graph_include_filters_imports(pkg_root: Path):
 def test_dependency_graph_to_json(pkg_root: Path):
     graph = DependencyGraph(pkg_root)
     payload = json.loads(graph.to_json())
-    assert {entry["name"] for entry in payload} == graph.nodes | {
-        importer for importer in graph.data
-    } - (graph.nodes - graph.data.keys())
+    assert {entry["name"] for entry in payload} == graph.nodes | {importer for importer in graph.data} - (
+        graph.nodes - graph.data.keys()
+    )
     # every importer entry carries its recorded imports
     by_name = {entry["name"]: set(entry["imports"]) for entry in payload}
     assert by_name["pkg.mod_a"] == {"pkg", "pkg.mod_b", "pkg.mod_c"}
@@ -259,9 +255,7 @@ def test_main_rejects_non_package(tmp_path, monkeypatch):
 
 def test_main_writes_output_file(pkg_root: Path, tmp_path: Path, monkeypatch):
     output = tmp_path / "out.html"
-    monkeypatch.setattr(
-        sys, "argv", ["betsy", str(pkg_root), "-o", str(output)]
-    )
+    monkeypatch.setattr(sys, "argv", ["betsy", str(pkg_root), "-o", str(output)])
     main()
 
     content = output.read_text()

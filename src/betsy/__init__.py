@@ -31,7 +31,7 @@ import graphviz
 
 from betsy.assets import INDEX_TEMPLATE
 
-ModulePath = t.Tuple[str, ...]
+ModulePath = tuple[str, ...]
 
 
 class ImportVisitor(ast.NodeVisitor):
@@ -39,21 +39,19 @@ class ImportVisitor(ast.NodeVisitor):
         super().__init__()
         self.base = base
         self.is_package = is_package
-        self.imports: t.Set[ModulePath] = set()
+        self.imports: set[ModulePath] = set()
 
     def visit_Import(self, node: ast.Import) -> None:
         self.imports |= {tuple(alias.name.split(".")) for alias in node.names}
 
-    def visit_ImportFrom(self, node: ast.ImportFrom):
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = tuple(node.module.split(".") if node.module else [])
         if not node.level:
             self.imports.add(module)
         else:
             package = self.base if self.is_package else self.base[:-1]
             index = len(package) - (node.level - 1)
-            assert index >= 0, (
-                f"invalid relative import from {node.module} at level {node.level} (base {self.base})"
-            )
+            assert index >= 0, f"invalid relative import from {node.module} at level {node.level} (base {self.base})"
             self.imports.add((*package[:index], *module))
 
 
@@ -73,7 +71,7 @@ def _path_to_module_path(path: Path, root: Path) -> ModulePath:
     return tuple(module)
 
 
-def _get_imports(source: str, base: ModulePath, is_package: bool = False) -> t.Set[ModulePath]:
+def _get_imports(source: str, base: ModulePath, is_package: bool = False) -> set[ModulePath]:
     # root = base[0]
     visitor = ImportVisitor(base, is_package)
     visitor.visit(ast.parse(source))
@@ -86,7 +84,7 @@ def _is_module(path: ModulePath, root: Path) -> bool:
     return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
 
 
-def get_imports(source_file: Path, root: Path) -> t.Set[str]:
+def get_imports(source_file: Path, root: Path) -> set[str]:
     assert source_file.suffix == ".py"
     with source_file.open() as f:
         return {
@@ -99,56 +97,42 @@ def get_imports(source_file: Path, root: Path) -> t.Set[str]:
         }
 
 
-def anyprefix(path, prefixes, default):
-    return (
-        any(path == _ or path.startswith(_ + ".") for _ in prefixes)
-        if prefixes is not None
-        else default
-    )
+def anyprefix(path: str, prefixes: set[str] | None, default: bool) -> bool:
+    return any(path == _ or path.startswith(_ + ".") for _ in prefixes) if prefixes is not None else default
 
 
 class DependencyGraph:
     def __init__(
         self,
         root: Path,
-        include: t.Optional[t.Set[str]] = None,
-        exclude: t.Optional[t.Set[str]] = None,
+        include: set[str] | None = None,
+        exclude: set[str] | None = None,
     ) -> None:
         self.root = root
         self.exclude = exclude
         self.include = include
 
-        data_gen = (
-            (".".join(_path_to_module_path(_, root)), get_imports(_, root))
-            for _ in root.rglob("*.py")
-        )
+        data_gen = ((".".join(_path_to_module_path(_, root)), get_imports(_, root)) for _ in root.rglob("*.py"))
 
         self.data = {
-            importer: {
-                _ for _ in imports if self.is_included(_) and not self.is_excluded(_)
-            }
+            importer: {_ for _ in imports if self.is_included(_) and not self.is_excluded(_)}
             for importer, imports in data_gen
             if self.is_included(importer) and not self.is_excluded(importer)
         }
 
-        self.nodes = set()
+        self.nodes: set[str] = set()
         for importer, imports in self.data.items():
             self.nodes.add(importer)
             self.nodes |= imports
 
-    def is_excluded(self, path):
+    def is_excluded(self, path: str) -> bool:
         return anyprefix(path, self.exclude, False)
 
-    def is_included(self, path):
+    def is_included(self, path: str) -> bool:
         return anyprefix(path, self.include, True)
 
-    def to_json(self):
-        return json.dumps(
-            [
-                {"name": importer, "imports": list(imports)}
-                for importer, imports in self.data.items()
-            ]
-        )
+    def to_json(self) -> str:
+        return json.dumps([{"name": importer, "imports": list(imports)} for importer, imports in self.data.items()])
 
     def export(self, file: Path) -> None:
         with file.open() as f:
@@ -185,14 +169,12 @@ class DependencyGraph:
         graph.render(dest, view=True)
 
     @property
-    def depth(self):
+    def depth(self) -> int:
         return max(_.count(".") for _ in self.data)
 
 
-def main():
-    argp = ArgumentParser(
-        prog="betsy", description="Incy-wincy Python project dependencies crawler"
-    )
+def main() -> None:
+    argp = ArgumentParser(prog="betsy", description="Incy-wincy Python project dependencies crawler")
 
     argp.add_argument(
         "root",
@@ -206,7 +188,7 @@ def main():
         help="The output file. Defaults to a temporary file",
     )
 
-    def setify(string):
+    def setify(string: str | None) -> set[str] | None:
         return {_.strip() for _ in string.split(",")} if string is not None else None
 
     argp.add_argument(
@@ -229,20 +211,19 @@ def main():
     if not (args.root / "__init__.py").is_file():
         raise ValueError(f"{args.root} is not a Python package")
 
-    graph = DependencyGraph(
-        args.root.resolve(), include=args.include, exclude=args.exclude
-    )
+    graph = DependencyGraph(args.root.resolve(), include=args.include, exclude=args.exclude)
 
-    if args.output is None:
-        output = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False)
-        print(f"file://{output.name}")
-    else:
-        output = open(args.output.with_suffix(".html"), "w")
+    output_path = args.output.with_suffix(".html") if args.output is not None else None
 
-    with output:
-        page = INDEX_TEMPLATE.replace(
-            "var classes = []", f"var classes = {graph.to_json()}"
-        )
+    output: t.IO[str]
+    with (
+        tempfile.NamedTemporaryFile("w", suffix=".html", delete=False)
+        if output_path is None
+        else open(output_path, "w") as output
+    ):
+        if output_path is None:
+            print(f"file://{output.name}")
+        page = INDEX_TEMPLATE.replace("var classes = []", f"var classes = {graph.to_json()}")
         diameter = 600 + max(len(graph.data) * 4, graph.depth * 160)
         page = page.replace("var diameter = 800", f"var diameter = {diameter}")
         output.write(page)
