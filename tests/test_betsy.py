@@ -117,6 +117,22 @@ def test_visit_import_from_relative_no_module_multiple_names():
     assert visitor.imports == {("pkg", "sub", "mod_d"), ("pkg", "sub", "mod_e")}
 
 
+def test_visit_import_from_absolute_star():
+    # from pkg.sub import * — the "*" alias is not a real name, so it must not
+    # be appended as a fake module path component (regression: this used to
+    # produce ("pkg", "sub", "*"), which later crashed _is_module's glob).
+    visitor = ImportVisitor(base=("pkg", "mod_a"))
+    visitor.visit(__import__("ast").parse("from pkg.sub import *\n"))
+    assert visitor.imports == {("pkg", "sub")}
+
+
+def test_visit_import_from_relative_no_module_star():
+    # from . import * — same as above but for the no-module relative form.
+    visitor = ImportVisitor(base=("pkg", "sub"), is_package=True)
+    visitor.visit(__import__("ast").parse("from . import *\n"))
+    assert visitor.imports == {("pkg", "sub")}
+
+
 def test_visit_import_from_invalid_level_raises():
     visitor = ImportVisitor(base=("pkg", "mod_a"), is_package=False)
     with pytest.raises(AssertionError):
@@ -216,6 +232,22 @@ def test_get_imports_absolute_non_module_name_falls_back_to_parent(pkg_root: Pat
     (pkg_root / "consumer.py").write_text("from pkg.mod_b import SomeClass\n")
     imports = get_imports(pkg_root / "consumer.py", pkg_root)
     assert imports == {"pkg.mod_b"}
+
+
+def test_get_imports_star_import_does_not_crash(pkg_root: Path):
+    # Regression: "from X import *" produces an ast.alias(name="*"); this used
+    # to be appended verbatim as a module path component, so _is_module's
+    # glob("*<name>*.so") became glob("**.so") and raised
+    # ValueError("Invalid pattern: '**' can only be an entire path component").
+    (pkg_root / "consumer.py").write_text("from pkg.mod_b import *\n")
+    imports = get_imports(pkg_root / "consumer.py", pkg_root)
+    assert imports == {"pkg.mod_b"}
+
+
+def test_get_imports_relative_star_import_does_not_crash(pkg_root: Path):
+    (pkg_root / "sub" / "consumer.py").write_text("from . import *\n")
+    imports = get_imports(pkg_root / "sub" / "consumer.py", pkg_root)
+    assert imports == {"pkg.sub"}
 
 
 def test_get_imports_native_extension_via_pyi(pkg_root: Path):
