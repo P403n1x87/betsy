@@ -95,10 +95,19 @@
 
     .topo-node text {
         fill: #bbb;
-        font: 300 13px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font: 300 16px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
         text-anchor: middle;
         dominant-baseline: central;
         pointer-events: none;
+    }
+
+    .topo-node .topo-node-title {
+        font-weight: 700;
+    }
+
+    .topo-node .topo-node-subtitle {
+        font-size: 13px;
+        fill-opacity: 0.65;
     }
 
     .topo-node:hover rect {
@@ -137,6 +146,17 @@
 
     .topo-node--leaf text {
         fill: #a3d9a5;
+    }
+
+    .topo-node--cycle rect {
+        fill: #3a1f1f;
+        stroke: #e23d3d;
+        stroke-width: 2px;
+    }
+
+    .topo-node--cycle text {
+        fill: #f2a3a3;
+        font-weight: 700;
     }
 
     #bundle,
@@ -469,8 +489,14 @@
         var topo = computeTopology(classes);
         var topoAlapRank = computeAlapRank(topo);
 
+        var topoCycleNodes = new Set();
+        topo.backEdges.forEach(function (e) {
+            topoCycleNodes.add(e.dependency);
+            topoCycleNodes.add(e.consumer);
+        });
+
         if (topo.backEdges.length > 0) {
-            legend.attr("height", 68);
+            legend.attr("height", 88);
             legend.append("circle")
                 .attr("cx", 10).attr("cy", 52).attr("r", 6)
                 .style("fill", "#e23d3d")
@@ -478,6 +504,14 @@
                 .attr("x", 30).attr("y", 52)
                 .attr("alignment-baseline", "middle").attr("fill", "#bbb")
                 .text("cycle").style("font-size", "11px")
+
+            legend.append("rect")
+                .attr("x", 4).attr("y", 66).attr("width", 12).attr("height", 12).attr("rx", 2)
+                .style("fill", "#3a1f1f").style("stroke", "#e23d3d")
+            legend.append("text")
+                .attr("x", 30).attr("y", 72)
+                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
+                .text("in a cycle").style("font-size", "11px")
         }
 
         // In/out-degree over the same dependency -> consumer edges used for
@@ -511,23 +545,37 @@
 
         // Ubuntu Mono is monospace, so a node's box width can be derived
         // straight from its label length instead of a DOM measurement pass.
-        var topoCharWidth = 7.8,
-            topoBoxPadX = 12,
-            topoMinBoxWidth = 50,
-            topoBoxHeight = 26,
-            topoNodeGap = 16,
-            topoRankGap = 70,
+        var topoCharWidth = 9.6,
+            topoSubCharWidth = 7.8,
+            topoBoxPadX = 14,
+            topoMinBoxWidth = 56,
+            topoBoxHeight = 46,
+            topoNodeGap = 18,
+            topoRankGap = 76,
             topoMargin = 40;
 
-        var topoLeafGlyph = "🍃 "; // leaf emoji + space, prefixed onto leaf-node labels
+        var topoLeafGlyph = "🍃 "; // leaf emoji + space, prefixed onto leaf-node titles
 
-        function topoLabel(name) {
-            return (topoIndeg[name] === 0 ? topoLeafGlyph : "") + name;
+        // Split "a.b.c" into a bold title ("c") and a dimmed subtitle showing
+        // the rest of the module path ("a.b"). Top-level modules have no dot,
+        // so their subtitle is empty.
+        function topoNameParts(name) {
+            var idx = name.lastIndexOf(".");
+            return idx === -1
+                ? { prefix: "", title: name }
+                : { prefix: name.slice(0, idx), title: name.slice(idx + 1) };
+        }
+
+        function topoTitle(name) {
+            var parts = topoNameParts(name);
+            return (topoIndeg[name] === 0 ? topoLeafGlyph : "") + parts.title;
         }
 
         function topoBoxWidth(name) {
-            var label = topoLabel(name);
-            return Math.max(topoMinBoxWidth, Math.round(label.length * topoCharWidth) + topoBoxPadX * 2);
+            var parts = topoNameParts(name);
+            var titleWidth = topoTitle(name).length * topoCharWidth;
+            var subWidth = parts.prefix.length * topoSubCharWidth;
+            return Math.max(topoMinBoxWidth, Math.round(Math.max(titleWidth, subWidth)) + topoBoxPadX * 2);
         }
 
         // Rank 0 (the leaves, with no internal dependencies) is drawn in the
@@ -547,7 +595,7 @@
         var topoContentHeight = topoRanks.length * topoBoxHeight + (topoRanks.length - 1) * topoRankGap,
             topoContentWidth = topoRanks.reduce(function (max, r) { return Math.max(max, topoRankWidth[r]); }, topoMinBoxWidth);
 
-        var topoLoopGap = topo.backEdges.length > 0 ? 60 + topo.backEdges.length * 14 : 0;
+        var topoLoopGap = topo.backEdges.length > 0 ? 90 : 0;
 
         var topoWidth = topoContentWidth + topoMargin * 2 + topoLoopGap,
             topoHeight = topoContentHeight + topoMargin * 2;
@@ -589,10 +637,20 @@
         topoMarker("topo-arrow-cycle", "#e23d3d");
 
         // Forward edges (dependency -> consumer) connect box edges directly,
-        // bottom to top, since leaves sit at the bottom. Back/cycle edges
-        // loop through a lane to the right of the whole diagram so they
-        // never cross through node boxes or other links.
-        var topoLoopBaseline = topoMargin + topoContentWidth + 30;
+        // bottom to top, since leaves sit at the bottom. Back/cycle edges loop
+        // through a lane just to the right of whichever rows they actually
+        // span, rather than the whole diagram, so short-range cycles get a
+        // short local loop instead of a long detour to the far edge.
+        var topoNodeRank = {};
+        topoVisibleNodes.forEach(function (n) { topoNodeRank[n] = topoRankIndex[topoAlapRank[n]]; });
+
+        var topoRankRight = {};
+        topoRanks.forEach(function (r) {
+            topoRankRight[r] = topoLayers[r].reduce(function (max, n) {
+                return Math.max(max, topoPos[n].x + topoPos[n].width);
+            }, 0);
+        });
+
         var backIndex = 0;
 
         function topoLinkPath(d) {
@@ -605,7 +663,12 @@
                 return "M" + x0 + "," + y0 + "C" + x0 + "," + mid + " " + x1 + "," + mid + " " + x1 + "," + y1;
             }
 
-            var loopX = topoLoopBaseline + (backIndex++ % 5) * 12;
+            var r1 = topoNodeRank[d.dependency], r2 = topoNodeRank[d.consumer];
+            var lo = Math.min(r1, r2), hi = Math.max(r1, r2);
+            var localRight = 0;
+            for (var r = lo; r <= hi; r++) localRight = Math.max(localRight, topoRankRight[r]);
+
+            var loopX = localRight + 24 + (backIndex++ % 5) * 12;
             var sx = src.x + src.width / 2, sy = src.y + src.height / 2,
                 tx = dst.x + dst.width / 2, ty = dst.y + dst.height / 2;
             return "M" + sx + "," + sy +
@@ -628,10 +691,13 @@
             .attr("d", topoLinkPath);
 
         var topoNodeData = topoVisibleNodes.map(function (n) {
+            var parts = topoNameParts(n);
             return {
                 name: n,
-                label: topoLabel(n),
+                title: topoTitle(n),
+                subtitle: parts.prefix,
                 isLeaf: topoIndeg[n] === 0,
+                isCycle: topoCycleNodes.has(n),
                 x: topoPos[n].x, y: topoPos[n].y, width: topoPos[n].width, height: topoPos[n].height,
             };
         });
@@ -639,7 +705,9 @@
         var topoNode = svgTopo.append("g").selectAll(".topo-node")
             .data(topoNodeData)
             .enter().append("g")
-            .attr("class", function (d) { return "topo-node" + (d.isLeaf ? " topo-node--leaf" : ""); })
+            .attr("class", function (d) {
+                return "topo-node" + (d.isLeaf ? " topo-node--leaf" : "") + (d.isCycle ? " topo-node--cycle" : "");
+            })
             .on("mouseover", mouseoveredTopo)
             .on("mouseout", mouseoutedTopo);
 
@@ -651,9 +719,16 @@
             .attr("rx", 4).attr("ry", 4);
 
         topoNode.append("text")
+            .attr("class", "topo-node-title")
             .attr("x", function (d) { return d.x + d.width / 2; })
-            .attr("y", function (d) { return d.y; })
-            .text(function (d) { return d.label; });
+            .attr("y", function (d) { return d.y - (d.subtitle ? 9 : 0); })
+            .text(function (d) { return d.title; });
+
+        topoNode.filter(function (d) { return d.subtitle; }).append("text")
+            .attr("class", "topo-node-subtitle")
+            .attr("x", function (d) { return d.x + d.width / 2; })
+            .attr("y", function (d) { return d.y + 11; })
+            .text(function (d) { return d.subtitle; });
 
         function mouseoveredTopo(d) {
             topoLink
