@@ -55,15 +55,95 @@
         stroke: #5890e2;
     }
 
-    #bundle {
+    .link--cycle {
+        stroke: #e23d3d;
+        stroke-opacity: 0.9;
+        stroke-width: 2px;
+        stroke-dasharray: 5, 3;
+    }
+
+    .topo-link {
+        stroke: #8899a0;
+        stroke-opacity: 0.55;
+        fill: none;
+    }
+
+    .topo-link--source {
+        stroke: #d6bc27;
+        stroke-opacity: 1;
+        stroke-width: 2px;
+    }
+
+    .topo-link--target {
+        stroke: #5890e2;
+        stroke-opacity: 1;
+        stroke-width: 2px;
+    }
+
+    .topo-link--cycle {
+        stroke: #e23d3d;
+        stroke-opacity: 0.85;
+        stroke-width: 2px;
+        stroke-dasharray: 5, 3;
+    }
+
+    .topo-node rect {
+        fill: #24393a;
+        stroke: #6d8f90;
+        stroke-width: 1px;
+    }
+
+    .topo-node text {
+        fill: #bbb;
+        font: 300 13px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        text-anchor: middle;
+        dominant-baseline: central;
+        pointer-events: none;
+    }
+
+    .topo-node:hover rect {
+        stroke: rgb(212, 80, 224);
+        stroke-width: 2px;
+    }
+
+    .topo-node:hover text {
+        fill: rgb(212, 80, 224);
+    }
+
+    .topo-node--source rect {
+        stroke: #d6bc27;
+        stroke-width: 2px;
+    }
+
+    .topo-node--source text {
+        fill: #d6bc27;
+        font-weight: 700;
+    }
+
+    .topo-node--target rect {
+        stroke: #5890e2;
+        stroke-width: 2px;
+    }
+
+    .topo-node--target text {
+        fill: #5890e2;
+        font-weight: 700;
+    }
+
+    .topo-node--leaf rect {
+        fill: #1f3a24;
+        stroke: #6fbf73;
+    }
+
+    .topo-node--leaf text {
+        fill: #a3d9a5;
+    }
+
+    #bundle,
+    #topo {
         margin-left: auto;
         margin-right: auto;
         display: block;
-        /* position: absolute; */
-        top: 50%;
-        left: 50%;
-        /* -ms-transform: translateY(-50%);
-        transform: translateY(-50%) translateX(-50%); */
     }
 
     #legend {
@@ -71,23 +151,54 @@
         right: 0px;
         top: 0px;
     }
+
+    #tabs {
+        position: fixed;
+        left: 0px;
+        top: 0px;
+        z-index: 20;
+        padding: 8px;
+    }
+
+    #tabs button {
+        background: #2f4f4f;
+        color: #ddd;
+        border: 1px solid #567;
+        border-radius: 3px;
+        padding: 6px 12px;
+        margin-right: 4px;
+        font: 300 13px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        cursor: pointer;
+    }
+
+    #tabs button.active {
+        background: #5890e2;
+        color: #111;
+        font-weight: 700;
+    }
 </style>
 
 <body>
+    <div id="tabs">
+        <button id="tab-bundle" class="active">Hierarchical Bundle</button>
+        <button id="tab-topo">Topological Sort</button>
+    </div>
+
+    <div id="view-bundle"></div>
+    <div id="view-topo" style="display: none;"></div>
+
     <script src="https://d3js.org/d3.v4.min.js"></script>
     <script>
 
-        var diameter = 800,
-            radius = diameter / 3,
-            innerRadius = radius - 120;
+        var classes = []
 
-        var cluster = d3.cluster()
-            .size([360, innerRadius]);
-
-        var line = d3.radialLine()
-            .curve(d3.curveBundle.beta(0.85))
-            .radius(function (d) { return d.y; })
-            .angle(function (d) { return d.x / 180 * Math.PI; });
+        var tooltip = d3.select("body")
+            .append("div")
+            .attr("id", "tooltip")
+            .style("position", "fixed")
+            .style("z-index", "10")
+            .style("visibility", "hidden")
+            .text("a simple tooltip");
 
         var legend = d3.select("body").append("svg")
             .attr("id", "legend")
@@ -110,15 +221,33 @@
             .attr("alignment-baseline", "middle").attr("fill", "#bbb")
             .text("imported by").style("font-size", "11px")
 
-        var tooltip = d3.select("body")
-            .append("div")
-            .attr("id", "tooltip")
-            .style("position", "fixed")
-            .style("z-index", "10")
-            .style("visibility", "hidden")
-            .text("a simple tooltip");
+        // -- Tabs --------------------------------------------------------------
 
-        var svg = d3.select("body").append("svg")
+        d3.select("#tab-bundle").on("click", function () { showView("bundle"); });
+        d3.select("#tab-topo").on("click", function () { showView("topo"); });
+
+        function showView(view) {
+            d3.select("#view-bundle").style("display", view === "bundle" ? "block" : "none");
+            d3.select("#view-topo").style("display", view === "topo" ? "block" : "none");
+            d3.select("#tab-bundle").classed("active", view === "bundle");
+            d3.select("#tab-topo").classed("active", view === "topo");
+        }
+
+        // -- Hierarchical edge bundling -----------------------------------------
+
+        var diameter = 800,
+            radius = diameter / 3,
+            innerRadius = radius - 120;
+
+        var cluster = d3.cluster()
+            .size([360, innerRadius]);
+
+        var line = d3.radialLine()
+            .curve(d3.curveBundle.beta(0.85))
+            .radius(function (d) { return d.y; })
+            .angle(function (d) { return d.x / 180 * Math.PI; });
+
+        var svg = d3.select("#view-bundle").append("svg")
             .attr("id", "bundle")
             .attr("width", diameter)
             .attr("height", diameter)
@@ -127,8 +256,6 @@
 
         var link = svg.append("g").selectAll(".link"),
             node = svg.append("g").selectAll(".node");
-
-        var classes = []
 
         var root = packageHierarchy(classes)
             .sum(function (d) { return 1; });
@@ -235,6 +362,333 @@
             });
 
             return imports;
+        }
+
+        // -- Topological sort ---------------------------------------------------
+        //
+        // Nodes are laid out in rows by dependency rank: a module with no
+        // internal dependencies sits in row 0, and every other module sits one
+        // row below its deepest dependency. When the import graph contains a
+        // cycle (so no true topological order exists), the cycle is broken
+        // greedily by peeling off the node with the fewest outstanding
+        // dependencies at each step, and the edges that violate the resulting
+        // order are drawn as dashed red "cycle" links.
+
+        function computeTopology(classes) {
+            var nodeSet = new Set();
+            classes.forEach(function (c) {
+                nodeSet.add(c.name);
+                (c.imports || []).forEach(function (imp) { nodeSet.add(imp); });
+            });
+
+            // Edge direction for ranking purposes: dependency -> consumer, i.e.
+            // the dependency must be ready (lower rank) before its consumer.
+            var edges = [];
+            classes.forEach(function (c) {
+                (c.imports || []).forEach(function (imp) {
+                    if (imp !== c.name) edges.push({ consumer: c.name, dependency: imp });
+                });
+            });
+
+            var nodes = Array.from(nodeSet);
+            var adj = {}, indeg = {};
+            nodes.forEach(function (n) { adj[n] = []; indeg[n] = 0; });
+            edges.forEach(function (e) {
+                adj[e.dependency].push(e.consumer);
+                indeg[e.consumer]++;
+            });
+
+            var rank = {}, remaining = new Set(nodes), layer = 0;
+            while (remaining.size) {
+                var ready = Array.from(remaining).filter(function (n) { return indeg[n] === 0; });
+
+                if (!ready.length) {
+                    // No node is fully ready: we're inside a cycle. Break it by
+                    // peeling off the node with the fewest outstanding
+                    // dependencies (a standard greedy feedback-arc-set heuristic).
+                    ready = [Array.from(remaining).reduce(function (a, b) {
+                        return indeg[a] <= indeg[b] ? a : b;
+                    })];
+                }
+
+                ready.forEach(function (n) { rank[n] = layer; remaining.delete(n); });
+                ready.forEach(function (n) {
+                    adj[n].forEach(function (m) {
+                        if (remaining.has(m) && --indeg[m] < 0) indeg[m] = 0;
+                    });
+                });
+
+                layer++;
+            }
+
+            var backEdges = edges.filter(function (e) { return rank[e.dependency] >= rank[e.consumer]; });
+
+            return { nodes: nodes, edges: edges, rank: rank, backEdges: backEdges };
+        }
+
+        // computeTopology() ranks each node as early as possible (ASAP): as
+        // soon as its dependencies allow. That leaves nodes with a single,
+        // far-away consumer stranded several rows below it. Re-rank instead
+        // as late as possible (ALAP): a node sits immediately below its
+        // *nearest* consumer, using the longest path to a sink (rather than
+        // shortest) to guarantee every dependency still ends up strictly
+        // below every one of its consumers. This also naturally aligns every
+        // sink (nothing depends on it) at the very top row, without needing
+        // a separate pinning step.
+        function computeAlapRank(topo) {
+            var backSet = new Set(topo.backEdges);
+            var effectiveEdges = topo.edges.filter(function (e) { return !backSet.has(e); });
+
+            var outCount = {}, deps = {};
+            topo.nodes.forEach(function (n) { outCount[n] = 0; deps[n] = []; });
+            effectiveEdges.forEach(function (e) {
+                outCount[e.dependency]++;
+                deps[e.consumer].push(e.dependency);
+            });
+
+            var height = {}, remaining = new Set(topo.nodes), wave = 0;
+            while (remaining.size) {
+                // effectiveEdges excludes all cycle-breaking back-edges, so this
+                // is a genuine DAG and `ready` is never empty here.
+                var ready = Array.from(remaining).filter(function (n) { return outCount[n] === 0; });
+                ready.forEach(function (n) { height[n] = wave; remaining.delete(n); });
+                ready.forEach(function (n) {
+                    deps[n].forEach(function (d) {
+                        if (remaining.has(d) && --outCount[d] < 0) outCount[d] = 0;
+                    });
+                });
+                wave++;
+            }
+
+            var maxHeight = topo.nodes.reduce(function (max, n) { return Math.max(max, height[n]); }, 0);
+            var rank = {};
+            topo.nodes.forEach(function (n) { rank[n] = maxHeight - height[n]; });
+            return rank;
+        }
+
+        var topo = computeTopology(classes);
+        var topoAlapRank = computeAlapRank(topo);
+
+        if (topo.backEdges.length > 0) {
+            legend.attr("height", 68);
+            legend.append("circle")
+                .attr("cx", 10).attr("cy", 52).attr("r", 6)
+                .style("fill", "#e23d3d")
+            legend.append("text")
+                .attr("x", 30).attr("y", 52)
+                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
+                .text("cycle").style("font-size", "11px")
+        }
+
+        // In/out-degree over the same dependency -> consumer edges used for
+        // ranking: out-degree counts modules that depend on a node, in-degree
+        // counts the node's own internal dependencies.
+        var topoOutdeg = {}, topoIndeg = {};
+        topo.nodes.forEach(function (n) { topoOutdeg[n] = 0; topoIndeg[n] = 0; });
+        topo.edges.forEach(function (e) {
+            topoOutdeg[e.dependency]++;
+            topoIndeg[e.consumer]++;
+        });
+
+        // Modules with neither incoming nor outgoing arrows take part in no
+        // dependency relationship at all - drop them to declutter the view.
+        var topoVisibleNodes = topo.nodes.filter(function (n) { return topoOutdeg[n] > 0 || topoIndeg[n] > 0; });
+
+        // Dropping the isolated nodes above can leave gaps in the ALAP rank
+        // sequence; compact what remains to a contiguous 0..k range.
+        var topoRankValues = Array.from(new Set(topoVisibleNodes.map(function (n) { return topoAlapRank[n]; })))
+            .sort(function (a, b) { return a - b; });
+        var topoRankIndex = {};
+        topoRankValues.forEach(function (v, i) { topoRankIndex[v] = i; });
+
+        var topoLayers = {};
+        topoVisibleNodes.forEach(function (n) {
+            var r = topoRankIndex[topoAlapRank[n]];
+            (topoLayers[r] = topoLayers[r] || []).push(n);
+        });
+
+        var topoRanks = Object.keys(topoLayers).map(Number).sort(function (a, b) { return a - b; });
+
+        // Ubuntu Mono is monospace, so a node's box width can be derived
+        // straight from its label length instead of a DOM measurement pass.
+        var topoCharWidth = 7.8,
+            topoBoxPadX = 12,
+            topoMinBoxWidth = 50,
+            topoBoxHeight = 26,
+            topoNodeGap = 16,
+            topoRankGap = 70,
+            topoMargin = 40;
+
+        var topoLeafGlyph = "🍃 "; // leaf emoji + space, prefixed onto leaf-node labels
+
+        function topoLabel(name) {
+            return (topoIndeg[name] === 0 ? topoLeafGlyph : "") + name;
+        }
+
+        function topoBoxWidth(name) {
+            var label = topoLabel(name);
+            return Math.max(topoMinBoxWidth, Math.round(label.length * topoCharWidth) + topoBoxPadX * 2);
+        }
+
+        // Rank 0 (the leaves, with no internal dependencies) is drawn in the
+        // bottom-most row, with dependents stacking upward above them.
+        var topoMaxRank = topoRanks.length - 1;
+        var topoRankY = {};
+        topoRanks.forEach(function (r) {
+            topoRankY[r] = topoMargin + (topoMaxRank - r) * (topoBoxHeight + topoRankGap);
+        });
+
+        var topoRankWidth = {};
+        topoRanks.forEach(function (r) {
+            var widths = topoLayers[r].map(topoBoxWidth);
+            topoRankWidth[r] = widths.reduce(function (a, b) { return a + b; }, 0) + (widths.length - 1) * topoNodeGap;
+        });
+
+        var topoContentHeight = topoRanks.length * topoBoxHeight + (topoRanks.length - 1) * topoRankGap,
+            topoContentWidth = topoRanks.reduce(function (max, r) { return Math.max(max, topoRankWidth[r]); }, topoMinBoxWidth);
+
+        var topoLoopGap = topo.backEdges.length > 0 ? 60 + topo.backEdges.length * 14 : 0;
+
+        var topoWidth = topoContentWidth + topoMargin * 2 + topoLoopGap,
+            topoHeight = topoContentHeight + topoMargin * 2;
+
+        var topoPos = {};
+        topoRanks.forEach(function (r) {
+            var row = topoLayers[r].slice().sort();
+            var startX = topoMargin + (topoContentWidth - topoRankWidth[r]) / 2;
+            var cx = startX;
+            row.forEach(function (name) {
+                var w = topoBoxWidth(name);
+                topoPos[name] = { x: cx, y: topoRankY[r], width: w, height: topoBoxHeight };
+                cx += w + topoNodeGap;
+            });
+        });
+
+        var svgTopo = d3.select("#view-topo").append("svg")
+            .attr("id", "topo")
+            .attr("width", topoWidth)
+            .attr("height", topoHeight);
+
+        var topoDefs = svgTopo.append("defs");
+
+        function topoMarker(id, fill) {
+            topoDefs.append("marker")
+                .attr("id", id)
+                .attr("viewBox", "0 0 10 10")
+                .attr("refX", 9).attr("refY", 5)
+                .attr("markerWidth", 7).attr("markerHeight", 7)
+                .attr("orient", "auto-start-reverse")
+                .append("path")
+                .attr("d", "M0,0L10,5L0,10z")
+                .style("fill", fill);
+        }
+
+        topoMarker("topo-arrow", "#8899a0");
+        topoMarker("topo-arrow-source", "#d6bc27");
+        topoMarker("topo-arrow-target", "#5890e2");
+        topoMarker("topo-arrow-cycle", "#e23d3d");
+
+        // Forward edges (dependency -> consumer) connect box edges directly,
+        // bottom to top, since leaves sit at the bottom. Back/cycle edges
+        // loop through a lane to the right of the whole diagram so they
+        // never cross through node boxes or other links.
+        var topoLoopBaseline = topoMargin + topoContentWidth + 30;
+        var backIndex = 0;
+
+        function topoLinkPath(d) {
+            var src = topoPos[d.dependency], dst = topoPos[d.consumer];
+
+            if (!d.isBack) {
+                var x0 = src.x + src.width / 2, y0 = src.y - src.height / 2,
+                    x1 = dst.x + dst.width / 2, y1 = dst.y + dst.height / 2,
+                    mid = (y0 + y1) / 2;
+                return "M" + x0 + "," + y0 + "C" + x0 + "," + mid + " " + x1 + "," + mid + " " + x1 + "," + y1;
+            }
+
+            var loopX = topoLoopBaseline + (backIndex++ % 5) * 12;
+            var sx = src.x + src.width / 2, sy = src.y + src.height / 2,
+                tx = dst.x + dst.width / 2, ty = dst.y + dst.height / 2;
+            return "M" + sx + "," + sy +
+                "C" + loopX + "," + sy + " " + loopX + "," + ty + " " + tx + "," + ty;
+        }
+
+        var topoLinkData = topo.edges.map(function (e) {
+            return {
+                consumer: e.consumer,
+                dependency: e.dependency,
+                isBack: topo.backEdges.indexOf(e) !== -1,
+            };
+        });
+
+        var topoLink = svgTopo.append("g").selectAll(".topo-link")
+            .data(topoLinkData)
+            .enter().append("path")
+            .attr("class", function (d) { return "topo-link" + (d.isBack ? " topo-link--cycle" : ""); })
+            .attr("marker-end", function (d) { return d.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; })
+            .attr("d", topoLinkPath);
+
+        var topoNodeData = topoVisibleNodes.map(function (n) {
+            return {
+                name: n,
+                label: topoLabel(n),
+                isLeaf: topoIndeg[n] === 0,
+                x: topoPos[n].x, y: topoPos[n].y, width: topoPos[n].width, height: topoPos[n].height,
+            };
+        });
+
+        var topoNode = svgTopo.append("g").selectAll(".topo-node")
+            .data(topoNodeData)
+            .enter().append("g")
+            .attr("class", function (d) { return "topo-node" + (d.isLeaf ? " topo-node--leaf" : ""); })
+            .on("mouseover", mouseoveredTopo)
+            .on("mouseout", mouseoutedTopo);
+
+        topoNode.append("rect")
+            .attr("x", function (d) { return d.x; })
+            .attr("y", function (d) { return d.y - d.height / 2; })
+            .attr("width", function (d) { return d.width; })
+            .attr("height", function (d) { return d.height; })
+            .attr("rx", 4).attr("ry", 4);
+
+        topoNode.append("text")
+            .attr("x", function (d) { return d.x + d.width / 2; })
+            .attr("y", function (d) { return d.y; })
+            .text(function (d) { return d.label; });
+
+        function mouseoveredTopo(d) {
+            topoLink
+                .classed("topo-link--target", function (l) { return l.dependency === d.name; })
+                .classed("topo-link--source", function (l) { return l.consumer === d.name; })
+                .attr("marker-end", function (l) {
+                    if (l.isBack) return "url(#topo-arrow-cycle)";
+                    if (l.dependency === d.name) return "url(#topo-arrow-target)";
+                    if (l.consumer === d.name) return "url(#topo-arrow-source)";
+                    return "url(#topo-arrow)";
+                })
+                .filter(function (l) { return l.consumer === d.name || l.dependency === d.name; })
+                .raise();
+
+            topoNode
+                .classed("topo-node--target", function (n) { return n.name !== d.name && topoLinkData.some(function (l) { return l.dependency === n.name && l.consumer === d.name; }); })
+                .classed("topo-node--source", function (n) { return n.name !== d.name && topoLinkData.some(function (l) { return l.consumer === n.name && l.dependency === d.name; }); });
+
+            tooltip
+                .text(d.name)
+                .style("visibility", "visible");
+        }
+
+        function mouseoutedTopo(d) {
+            topoLink
+                .classed("topo-link--target", false)
+                .classed("topo-link--source", false)
+                .attr("marker-end", function (l) { return l.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; });
+
+            topoNode
+                .classed("topo-node--target", false)
+                .classed("topo-node--source", false);
+
+            tooltip
+                .style("visibility", "hidden");
         }
 
     </script>
