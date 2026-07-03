@@ -194,6 +194,11 @@ class DependencyGraph:
         return max(_.count(".") for _ in self.data)
 
 
+from betsy.metrics import ModuleMetrics, compute_metrics  # noqa: E402
+
+__all__ = ["DependencyGraph", "ModuleMetrics", "compute_metrics"]
+
+
 def main() -> None:
     argp = ArgumentParser(prog="betsy", description="Incy-wincy Python project dependencies crawler")
 
