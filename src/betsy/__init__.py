@@ -25,6 +25,7 @@ import json
 import tempfile
 import typing as t
 from argparse import ArgumentParser
+from dataclasses import asdict
 from pathlib import Path
 
 import graphviz
@@ -252,6 +253,9 @@ def main() -> None:
         page = INDEX_TEMPLATE.replace("var classes = []", f"var classes = {graph.to_json()}")
         diameter = 600 + max(len(graph.data) * 4, graph.depth * 160)
         page = page.replace("var diameter = 800", f"var diameter = {diameter}")
+        metrics = compute_metrics(graph)
+        metrics_json = json.dumps({name: asdict(m) for name, m in metrics.items()})
+        page = page.replace("var metrics = {}", f"var metrics = {metrics_json}")
         output.write(page)
 
 

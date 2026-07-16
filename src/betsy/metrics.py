@@ -29,6 +29,7 @@ visualisation.
 """
 
 import ast
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,6 +82,86 @@ def _module_class_stats(module: str, root: Path) -> tuple[int, int]:
     return 0, 0
 
 
+def _strongly_connected_components(nodes: set[str], adj: dict[str, set[str]]) -> list[set[str]]:
+    """Tarjan's SCC algorithm, iterative to avoid recursion-depth limits."""
+    index_counter = 0
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: dict[str, bool] = {}
+    stack: list[str] = []
+    result: list[set[str]] = []
+
+    for start in nodes:
+        if start in index:
+            continue
+
+        work: list[tuple[str, list[str], int]] = [(start, list(adj.get(start, ())), 0)]
+        index[start] = lowlink[start] = index_counter
+        index_counter += 1
+        stack.append(start)
+        on_stack[start] = True
+
+        while work:
+            v, children, i = work[-1]
+
+            if i < len(children):
+                w = children[i]
+                work[-1] = (v, children, i + 1)
+                if w not in index:
+                    index[w] = lowlink[w] = index_counter
+                    index_counter += 1
+                    stack.append(w)
+                    on_stack[w] = True
+                    work.append((w, list(adj.get(w, ())), 0))
+                elif on_stack.get(w):
+                    lowlink[v] = min(lowlink[v], index[w])
+                continue
+
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                lowlink[parent] = min(lowlink[parent], lowlink[v])
+
+            if lowlink[v] == index[v]:
+                component: set[str] = set()
+                while True:
+                    w = stack.pop()
+                    on_stack[w] = False
+                    component.add(w)
+                    if w == v:
+                        break
+                result.append(component)
+
+    return result
+
+
+def _ccd_min(n: int) -> float:
+    """Balanced-binary-tree lower bound on CCD for ``n`` components (Sangal et al.)."""
+    return (n + 1) * math.log2(n + 1) - n
+
+
+def _compute_nccd(graph: DependencyGraph) -> dict[str, float]:
+    """NCCD (Normalized Cumulative Component Dependency) for every module.
+
+    Every module gets a value, not just ones in a cycle: a module with no
+    cyclic dependency is its own strongly-connected component of size 1,
+    which is trivially a perfectly balanced tree, so its NCCD is exactly
+    ``1.0`` -- the same floor a healthy multi-module cycle is measured
+    against. Higher values mean a worse-than-ideal tangle for a component of
+    that size.
+    """
+    adj = {name: {_ for _ in imports if _ in graph.data} - {name} for name, imports in graph.data.items()}
+
+    nccd: dict[str, float] = {}
+    for component in _strongly_connected_components(set(graph.data), adj):
+        k = len(component)
+        value = (k * k) / _ccd_min(k)
+        for name in component:
+            nccd[name] = value
+
+    return nccd
+
+
 @dataclass(frozen=True)
 class ModuleMetrics:
     """Coupling metrics for a single module.
@@ -95,6 +176,9 @@ class ModuleMetrics:
             Ranges over ``[-1, 1]``. Negative values sit in the "zone of pain"
             (concrete and stable); positive values sit in the "zone of
             uselessness" (abstract and unstable).
+        nccd: Normalized Cumulative Component Dependency of the module's
+            strongly connected component. ``1.0`` for a module that isn't
+            part of an import cycle; higher means a worse-than-ideal tangle.
     """
 
     name: str
@@ -103,6 +187,7 @@ class ModuleMetrics:
     i: float
     a: float
     d: float
+    nccd: float
 
 
 def compute_metrics(graph: DependencyGraph) -> dict[str, ModuleMetrics]:
@@ -118,6 +203,8 @@ def compute_metrics(graph: DependencyGraph) -> dict[str, ModuleMetrics]:
             if imported in afferent and imported != importer:
                 afferent[imported] += 1
 
+    nccd_by_module = _compute_nccd(graph)
+
     metrics: dict[str, ModuleMetrics] = {}
     for name, imports in graph.data.items():
         ca = afferent[name]
@@ -130,6 +217,6 @@ def compute_metrics(graph: DependencyGraph) -> dict[str, ModuleMetrics]:
         total_classes, abstract_classes = _module_class_stats(name, graph.root)
         a = abstract_classes / total_classes if total_classes else 0.0
 
-        metrics[name] = ModuleMetrics(name=name, ca=ca, ce=ce, i=i, a=a, d=a + i - 1)
+        metrics[name] = ModuleMetrics(name=name, ca=ca, ce=ce, i=i, a=a, d=a + i - 1, nccd=nccd_by_module[name])
 
     return metrics
