@@ -3,6 +3,7 @@
 <style>
     body {
         background-color: darkslategray;
+        padding-top: 48px;
     }
 
     .node {
@@ -159,6 +160,14 @@
         font-weight: 700;
     }
 
+    .topo-node--group rect {
+        stroke-dasharray: 4, 3;
+    }
+
+    .topo-node--expandable {
+        cursor: pointer;
+    }
+
     #bundle,
     #topo {
         margin-left: auto;
@@ -196,12 +205,38 @@
         color: #111;
         font-weight: 700;
     }
+
+    #topo-controls {
+        display: none;
+        margin-left: 12px;
+        padding-left: 12px;
+        border-left: 1px solid #567;
+    }
+
+    #topo-controls.active {
+        display: inline;
+    }
+
+    #topo-controls button {
+        background: #2f4f4f;
+        color: #ddd;
+        border: 1px solid #567;
+        border-radius: 3px;
+        padding: 6px 12px;
+        margin-right: 4px;
+        font: 300 13px "Ubuntu Mono", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        cursor: pointer;
+    }
 </style>
 
 <body>
     <div id="tabs">
         <button id="tab-bundle" class="active">Hierarchical Bundle</button>
         <button id="tab-topo">Topological Sort</button>
+        <span id="topo-controls">
+            <button id="topo-expand-all">Expand all</button>
+            <button id="topo-collapse-all">Collapse all</button>
+        </span>
     </div>
 
     <div id="view-bundle"></div>
@@ -251,6 +286,7 @@
             d3.select("#view-topo").style("display", view === "topo" ? "block" : "none");
             d3.select("#tab-bundle").classed("active", view === "bundle");
             d3.select("#tab-topo").classed("active", view === "topo");
+            d3.select("#topo-controls").classed("active", view === "topo");
         }
 
         // -- Hierarchical edge bundling -----------------------------------------
@@ -386,31 +422,139 @@
 
         // -- Topological sort ---------------------------------------------------
         //
-        // Nodes are laid out in rows by dependency rank: a module with no
-        // internal dependencies sits in row 0, and every other module sits one
-        // row below its deepest dependency. When the import graph contains a
-        // cycle (so no true topological order exists), the cycle is broken
-        // greedily by peeling off the node with the fewest outstanding
-        // dependencies at each step, and the edges that violate the resulting
-        // order are drawn as dashed red "cycle" links.
+        // Nodes are laid out in rows by dependency rank, one row per "wave" of
+        // readiness. Import cycles (mutually-dependent modules) have no valid
+        // rank, so every strongly-connected component of size > 1 is condensed
+        // into a single collapsible group before ranking, which guarantees
+        // ranking always runs over a genuine DAG. The view starts collapsed to
+        // just the top-level modules (nothing imports them); clicking a node
+        // reveals what it imports, and clicking a cycle group reveals its
+        // members and the real cyclic edges between them.
 
-        function computeTopology(classes) {
-            var nodeSet = new Set();
-            classes.forEach(function (c) {
-                nodeSet.add(c.name);
-                (c.imports || []).forEach(function (imp) { nodeSet.add(imp); });
-            });
-
-            // Edge direction for ranking purposes: dependency -> consumer, i.e.
-            // the dependency must be ready (lower rank) before its consumer.
+        function buildRawEdges(classes) {
             var edges = [];
             classes.forEach(function (c) {
                 (c.imports || []).forEach(function (imp) {
                     if (imp !== c.name) edges.push({ consumer: c.name, dependency: imp });
                 });
             });
+            return edges;
+        }
 
-            var nodes = Array.from(nodeSet);
+        function buildRawNodes(classes) {
+            var nodeSet = new Set();
+            classes.forEach(function (c) {
+                nodeSet.add(c.name);
+                (c.imports || []).forEach(function (imp) { nodeSet.add(imp); });
+            });
+            return Array.from(nodeSet);
+        }
+
+        var rawNodes = buildRawNodes(classes);
+        var rawEdges = buildRawEdges(classes);
+
+        var rawEdgesByConsumer = {};
+        rawNodes.forEach(function (n) { rawEdgesByConsumer[n] = []; });
+        rawEdges.forEach(function (e) { rawEdgesByConsumer[e.consumer].push(e.dependency); });
+
+        // In/out-degree over the raw import edges: out-degree counts modules
+        // that depend on a node, in-degree counts the node's own imports. Used
+        // to prefix the leaf glyph and to drop fully-isolated nodes below.
+        var topoIndeg = {}, topoOutdeg = {};
+        rawNodes.forEach(function (n) { topoIndeg[n] = 0; topoOutdeg[n] = 0; });
+        rawEdges.forEach(function (e) { topoIndeg[e.consumer]++; topoOutdeg[e.dependency]++; });
+
+        // Modules with neither incoming nor outgoing arrows take part in no
+        // dependency relationship at all - drop them to declutter the view.
+        var topoVisibleRawNodes = rawNodes.filter(function (n) { return topoIndeg[n] > 0 || topoOutdeg[n] > 0; });
+
+        // -- Strongly-connected components ---------------------------------
+        //
+        // Iterative Tarjan (mirrors the Python implementation used for the
+        // NCCD metric in metrics.py) to avoid recursion-depth issues on large
+        // graphs.
+        function computeSCCs(nodes, adj) {
+            var indexCounter = 0, index = {}, lowlink = {}, onStack = {}, stack = [], result = [];
+
+            nodes.forEach(function (start) {
+                if (start in index) return;
+
+                var work = [[start, (adj[start] || []).slice(), 0]];
+                index[start] = lowlink[start] = indexCounter++;
+                stack.push(start);
+                onStack[start] = true;
+
+                while (work.length) {
+                    var frame = work[work.length - 1],
+                        v = frame[0], children = frame[1], i = frame[2];
+
+                    if (i < children.length) {
+                        var w = children[i];
+                        frame[2] = i + 1;
+                        if (!(w in index)) {
+                            index[w] = lowlink[w] = indexCounter++;
+                            stack.push(w);
+                            onStack[w] = true;
+                            work.push([w, (adj[w] || []).slice(), 0]);
+                        } else if (onStack[w]) {
+                            lowlink[v] = Math.min(lowlink[v], index[w]);
+                        }
+                        continue;
+                    }
+
+                    work.pop();
+                    if (work.length) {
+                        var parent = work[work.length - 1][0];
+                        lowlink[parent] = Math.min(lowlink[parent], lowlink[v]);
+                    }
+
+                    if (lowlink[v] === index[v]) {
+                        var component = [], w2;
+                        do {
+                            w2 = stack.pop();
+                            onStack[w2] = false;
+                            component.push(w2);
+                        } while (w2 !== v);
+                        result.push(component);
+                    }
+                }
+            });
+
+            return result;
+        }
+
+        // groupOf maps every raw node name to itself (not part of any cycle)
+        // or to a synthetic group id shared by every member of its cycle.
+        // groupInfo holds the member list for each such group id.
+        var groupOf = {}, groupInfo = {}, groupCount = 0;
+        computeSCCs(rawNodes, rawEdgesByConsumer).forEach(function (members) {
+            if (members.length > 1) {
+                var id = "scc:" + (groupCount++);
+                groupInfo[id] = { members: members.slice() };
+                members.forEach(function (m) { groupOf[m] = id; });
+            } else {
+                groupOf[members[0]] = members[0];
+            }
+        });
+
+        // -- Condensation into a DAG, used only to compute a rank for every
+        // group/plain node up front. -----------------------------------------
+
+        var condensedNodeSet = new Set();
+        topoVisibleRawNodes.forEach(function (n) { condensedNodeSet.add(groupOf[n]); });
+        var condensedNodes = Array.from(condensedNodeSet);
+
+        var condensedSeen = new Set(), condensedEdges = [];
+        rawEdges.forEach(function (e) {
+            var c = groupOf[e.consumer], d = groupOf[e.dependency];
+            if (c === d) return;
+            var key = c + ">" + d;
+            if (condensedSeen.has(key)) return;
+            condensedSeen.add(key);
+            condensedEdges.push({ consumer: c, dependency: d });
+        });
+
+        function computeTopology(nodes, edges) {
             var adj = {}, indeg = {};
             nodes.forEach(function (n) { adj[n] = []; indeg[n] = 0; });
             edges.forEach(function (e) {
@@ -423,9 +567,8 @@
                 var ready = Array.from(remaining).filter(function (n) { return indeg[n] === 0; });
 
                 if (!ready.length) {
-                    // No node is fully ready: we're inside a cycle. Break it by
-                    // peeling off the node with the fewest outstanding
-                    // dependencies (a standard greedy feedback-arc-set heuristic).
+                    // Condensation guarantees a DAG, so this should never
+                    // trigger; kept as a defensive fallback only.
                     ready = [Array.from(remaining).reduce(function (a, b) {
                         return indeg[a] <= indeg[b] ? a : b;
                     })];
@@ -442,19 +585,14 @@
             }
 
             var backEdges = edges.filter(function (e) { return rank[e.dependency] >= rank[e.consumer]; });
-
             return { nodes: nodes, edges: edges, rank: rank, backEdges: backEdges };
         }
 
-        // computeTopology() ranks each node as early as possible (ASAP): as
-        // soon as its dependencies allow. That leaves nodes with a single,
-        // far-away consumer stranded several rows below it. Re-rank instead
-        // as late as possible (ALAP): a node sits immediately below its
-        // *nearest* consumer, using the longest path to a sink (rather than
-        // shortest) to guarantee every dependency still ends up strictly
-        // below every one of its consumers. This also naturally aligns every
-        // sink (nothing depends on it) at the very top row, without needing
-        // a separate pinning step.
+        // As-soon-as-possible ranking leaves nodes with a single, far-away
+        // consumer stranded several rows below it. Re-rank as-late-as-possible
+        // instead: a node sits immediately below its *nearest* consumer, using
+        // the longest path to a sink. This also naturally aligns every sink
+        // (nothing depends on it) at the very top row.
         function computeAlapRank(topo) {
             var backSet = new Set(topo.backEdges);
             var effectiveEdges = topo.edges.filter(function (e) { return !backSet.has(e); });
@@ -468,8 +606,8 @@
 
             var height = {}, remaining = new Set(topo.nodes), wave = 0;
             while (remaining.size) {
-                // effectiveEdges excludes all cycle-breaking back-edges, so this
-                // is a genuine DAG and `ready` is never empty here.
+                // effectiveEdges excludes all back-edges, so this is a genuine
+                // DAG and `ready` is never empty here.
                 var ready = Array.from(remaining).filter(function (n) { return outCount[n] === 0; });
                 ready.forEach(function (n) { height[n] = wave; remaining.delete(n); });
                 ready.forEach(function (n) {
@@ -486,62 +624,125 @@
             return rank;
         }
 
-        var topo = computeTopology(classes);
-        var topoAlapRank = computeAlapRank(topo);
+        var condensedTopo = computeTopology(condensedNodes, condensedEdges);
+        var condensedRank = computeAlapRank(condensedTopo);
 
-        var topoCycleNodes = new Set();
-        topo.backEdges.forEach(function (e) {
-            topoCycleNodes.add(e.dependency);
-            topoCycleNodes.add(e.consumer);
+        // Every displayable id -- a plain node, a collapsed group, or a
+        // group's individual member once exploded -- shares its group's
+        // rank, so revealing or hiding group members never changes anyone's
+        // row.
+        var nodeRank = {};
+        condensedNodes.forEach(function (n) { nodeRank[n] = condensedRank[n]; });
+        Object.keys(groupInfo).forEach(function (gid) {
+            groupInfo[gid].members.forEach(function (m) { nodeRank[m] = condensedRank[gid]; });
         });
 
-        if (topo.backEdges.length > 0) {
-            legend.attr("height", 88);
-            legend.append("circle")
-                .attr("cx", 10).attr("cy", 52).attr("r", 6)
-                .style("fill", "#e23d3d")
-            legend.append("text")
-                .attr("x", 30).attr("y", 52)
-                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
-                .text("cycle").style("font-size", "11px")
+        var condensedOutdeg = {};
+        condensedNodes.forEach(function (n) { condensedOutdeg[n] = 0; });
+        condensedEdges.forEach(function (e) { condensedOutdeg[e.dependency]++; });
 
-            legend.append("rect")
-                .attr("x", 4).attr("y", 66).attr("width", 12).attr("height", 12).attr("rx", 2)
-                .style("fill", "#3a1f1f").style("stroke", "#e23d3d")
-            legend.append("text")
-                .attr("x", 30).attr("y", 72)
-                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
-                .text("in a cycle").style("font-size", "11px")
+        // The default view: just the modules nothing else depends on.
+        var topoRoots = condensedNodes.filter(function (n) { return condensedOutdeg[n] === 0; });
+
+        // -- Expand/collapse state -------------------------------------------
+
+        var expanded = new Set();
+
+        // `id` is either a raw node name or a group id ("scc:N"). For a
+        // group, expanding reveals its members. For anything else, expanding
+        // reveals the ids of whatever it imports, mapped through any
+        // grouping (an import that belongs to an unexploded group is
+        // represented by that group's id; an import that stays inside the
+        // *same* group as `id` is dropped, since it's already implied once
+        // that group is exploded).
+        function childrenOf(id) {
+            if (groupInfo[id]) return groupInfo[id].members.slice();
+
+            var own = groupOf[id], children = new Set();
+            (rawEdgesByConsumer[id] || []).forEach(function (dep) {
+                var t = groupOf[dep];
+                if (t !== own) children.add(t);
+            });
+            return Array.from(children);
         }
 
-        // In/out-degree over the same dependency -> consumer edges used for
-        // ranking: out-degree counts modules that depend on a node, in-degree
-        // counts the node's own internal dependencies.
-        var topoOutdeg = {}, topoIndeg = {};
-        topo.nodes.forEach(function (n) { topoOutdeg[n] = 0; topoIndeg[n] = 0; });
-        topo.edges.forEach(function (e) {
-            topoOutdeg[e.dependency]++;
-            topoIndeg[e.consumer]++;
-        });
+        function isExpandable(id) {
+            return !!groupInfo[id] || childrenOf(id).length > 0;
+        }
 
-        // Modules with neither incoming nor outgoing arrows take part in no
-        // dependency relationship at all - drop them to declutter the view.
-        var topoVisibleNodes = topo.nodes.filter(function (n) { return topoOutdeg[n] > 0 || topoIndeg[n] > 0; });
+        // `rawName` maps to itself unless it belongs to a group: then it maps
+        // to the group id, unless that group is currently exploded, in which
+        // case it maps to itself so it displays as its own node.
+        function displayIdOf(rawName) {
+            var g = groupOf[rawName];
+            return (g === rawName || expanded.has(g)) ? rawName : g;
+        }
 
-        // Dropping the isolated nodes above can leave gaps in the ALAP rank
-        // sequence; compact what remains to a contiguous 0..k range.
-        var topoRankValues = Array.from(new Set(topoVisibleNodes.map(function (n) { return topoAlapRank[n]; })))
-            .sort(function (a, b) { return a - b; });
-        var topoRankIndex = {};
-        topoRankValues.forEach(function (v, i) { topoRankIndex[v] = i; });
+        function computeReachable() {
+            var reachable = new Set(topoRoots), queue = topoRoots.slice();
+            while (queue.length) {
+                var id = queue.shift();
+                if (!expanded.has(id)) continue;
+                childrenOf(id).forEach(function (child) {
+                    if (!reachable.has(child)) { reachable.add(child); queue.push(child); }
+                });
+            }
+            return reachable;
+        }
 
-        var topoLayers = {};
-        topoVisibleNodes.forEach(function (n) {
-            var r = topoRankIndex[topoAlapRank[n]];
-            (topoLayers[r] = topoLayers[r] || []).push(n);
-        });
+        function computeDisplaySet(reachable) {
+            var display = new Set(reachable);
+            expanded.forEach(function (id) { if (groupInfo[id]) display.delete(id); });
+            return display;
+        }
 
-        var topoRanks = Object.keys(topoLayers).map(Number).sort(function (a, b) { return a - b; });
+        function computeDisplayEdges(displaySet) {
+            var seen = new Set(), result = [];
+            rawEdges.forEach(function (e) {
+                var c = displayIdOf(e.consumer), d = displayIdOf(e.dependency);
+                if (c === d || !displaySet.has(c) || !displaySet.has(d)) return;
+                var key = c + ">" + d;
+                if (seen.has(key)) return;
+                seen.add(key);
+                result.push({ consumer: c, dependency: d, isBack: nodeRank[d] >= nodeRank[c] });
+            });
+            return result;
+        }
+
+        function toggleExpand(id) {
+            if (!isExpandable(id)) return;
+            if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+
+            var reachable = computeReachable();
+            Array.from(expanded).forEach(function (e) { if (!reachable.has(e)) expanded.delete(e); });
+
+            renderTopo(computeDisplaySet(reachable));
+        }
+
+        // Every group id and every raw node name that has something to
+        // reveal, regardless of whether it's currently reachable -- once all
+        // of them are marked expanded, the reachability walk from the roots
+        // unfolds the entire graph in one pass.
+        function allExpandableIds() {
+            var ids = new Set(condensedNodes);
+            rawNodes.forEach(function (n) { ids.add(n); });
+            return Array.from(ids).filter(isExpandable);
+        }
+
+        function expandAll() {
+            expanded = new Set(allExpandableIds());
+            renderTopo(computeDisplaySet(computeReachable()));
+        }
+
+        function collapseAll() {
+            expanded = new Set();
+            renderTopo(computeDisplaySet(computeReachable()));
+        }
+
+        d3.select("#topo-expand-all").on("click", expandAll);
+        d3.select("#topo-collapse-all").on("click", collapseAll);
+
+        // -- Rendering ---------------------------------------------------------
 
         // Ubuntu Mono is monospace, so a node's box width can be derived
         // straight from its label length instead of a DOM measurement pass.
@@ -566,205 +767,251 @@
                 : { prefix: name.slice(0, idx), title: name.slice(idx + 1) };
         }
 
-        function topoTitle(name) {
-            var parts = topoNameParts(name);
-            return (topoIndeg[name] === 0 ? topoLeafGlyph : "") + parts.title;
+        function displayTitle(id) {
+            var base = groupInfo[id]
+                ? groupInfo[id].members.length + " modules"
+                : (topoIndeg[id] === 0 ? topoLeafGlyph : "") + topoNameParts(id).title;
+            if (!isExpandable(id)) return base;
+            return base + (expanded.has(id) ? " −" : " +");
         }
 
-        function topoBoxWidth(name) {
-            var parts = topoNameParts(name);
-            var titleWidth = topoTitle(name).length * topoCharWidth;
-            var subWidth = parts.prefix.length * topoSubCharWidth;
+        function displaySubtitle(id) {
+            return groupInfo[id] ? "cycle" : topoNameParts(id).prefix;
+        }
+
+        function displayBoxWidth(id) {
+            var titleWidth = displayTitle(id).length * topoCharWidth;
+            var subWidth = displaySubtitle(id).length * topoSubCharWidth;
             return Math.max(topoMinBoxWidth, Math.round(Math.max(titleWidth, subWidth)) + topoBoxPadX * 2);
         }
 
-        // Rank 0 (the leaves, with no internal dependencies) is drawn in the
-        // bottom-most row, with dependents stacking upward above them.
-        var topoMaxRank = topoRanks.length - 1;
-        var topoRankY = {};
-        topoRanks.forEach(function (r) {
-            topoRankY[r] = topoMargin + (topoMaxRank - r) * (topoBoxHeight + topoRankGap);
-        });
+        function renderTopo(displaySet) {
+            d3.select("#view-topo").select("svg#topo").remove();
 
-        var topoRankWidth = {};
-        topoRanks.forEach(function (r) {
-            var widths = topoLayers[r].map(topoBoxWidth);
-            topoRankWidth[r] = widths.reduce(function (a, b) { return a + b; }, 0) + (widths.length - 1) * topoNodeGap;
-        });
+            var displayNodes = Array.from(displaySet).sort();
 
-        var topoContentHeight = topoRanks.length * topoBoxHeight + (topoRanks.length - 1) * topoRankGap,
-            topoContentWidth = topoRanks.reduce(function (max, r) { return Math.max(max, topoRankWidth[r]); }, topoMinBoxWidth);
+            // Compact whatever ranks appear in the current display to a
+            // contiguous 0..k range.
+            var rankValues = Array.from(new Set(displayNodes.map(function (n) { return nodeRank[n]; })))
+                .sort(function (a, b) { return a - b; });
+            var rankIndex = {};
+            rankValues.forEach(function (v, i) { rankIndex[v] = i; });
 
-        var topoLoopGap = topo.backEdges.length > 0 ? 90 : 0;
-
-        var topoWidth = topoContentWidth + topoMargin * 2 + topoLoopGap,
-            topoHeight = topoContentHeight + topoMargin * 2;
-
-        var topoPos = {};
-        topoRanks.forEach(function (r) {
-            var row = topoLayers[r].slice().sort();
-            var startX = topoMargin + (topoContentWidth - topoRankWidth[r]) / 2;
-            var cx = startX;
-            row.forEach(function (name) {
-                var w = topoBoxWidth(name);
-                topoPos[name] = { x: cx, y: topoRankY[r], width: w, height: topoBoxHeight };
-                cx += w + topoNodeGap;
+            var layers = {};
+            displayNodes.forEach(function (n) {
+                var r = rankIndex[nodeRank[n]];
+                (layers[r] = layers[r] || []).push(n);
             });
-        });
 
-        var svgTopo = d3.select("#view-topo").append("svg")
-            .attr("id", "topo")
-            .attr("width", topoWidth)
-            .attr("height", topoHeight);
+            var ranks = Object.keys(layers).map(Number).sort(function (a, b) { return a - b; });
 
-        var topoDefs = svgTopo.append("defs");
+            // Rank 0 (the leaves) is drawn in the bottom-most row, with
+            // dependents stacking upward above them.
+            var maxRank = ranks.length - 1;
+            var rankY = {};
+            ranks.forEach(function (r) { rankY[r] = topoMargin + (maxRank - r) * (topoBoxHeight + topoRankGap); });
 
-        function topoMarker(id, fill) {
-            topoDefs.append("marker")
-                .attr("id", id)
-                .attr("viewBox", "0 0 10 10")
-                .attr("refX", 9).attr("refY", 5)
-                .attr("markerWidth", 7).attr("markerHeight", 7)
-                .attr("orient", "auto-start-reverse")
-                .append("path")
-                .attr("d", "M0,0L10,5L0,10z")
-                .style("fill", fill);
-        }
+            var rankWidth = {};
+            ranks.forEach(function (r) {
+                var widths = layers[r].map(displayBoxWidth);
+                rankWidth[r] = widths.reduce(function (a, b) { return a + b; }, 0) + (widths.length - 1) * topoNodeGap;
+            });
 
-        topoMarker("topo-arrow", "#8899a0");
-        topoMarker("topo-arrow-source", "#d6bc27");
-        topoMarker("topo-arrow-target", "#5890e2");
-        topoMarker("topo-arrow-cycle", "#e23d3d");
+            var contentHeight = ranks.length * topoBoxHeight + (ranks.length - 1) * topoRankGap,
+                contentWidth = ranks.reduce(function (max, r) { return Math.max(max, rankWidth[r]); }, topoMinBoxWidth);
 
-        // Forward edges (dependency -> consumer) connect box edges directly,
-        // bottom to top, since leaves sit at the bottom. Back/cycle edges loop
-        // through a lane just to the right of whichever rows they actually
-        // span, rather than the whole diagram, so short-range cycles get a
-        // short local loop instead of a long detour to the far edge.
-        var topoNodeRank = {};
-        topoVisibleNodes.forEach(function (n) { topoNodeRank[n] = topoRankIndex[topoAlapRank[n]]; });
+            var pos = {};
+            ranks.forEach(function (r) {
+                var startX = topoMargin + (contentWidth - rankWidth[r]) / 2, cx = startX;
+                layers[r].forEach(function (name) {
+                    var w = displayBoxWidth(name);
+                    pos[name] = { x: cx, y: rankY[r], width: w, height: topoBoxHeight };
+                    cx += w + topoNodeGap;
+                });
+            });
 
-        var topoRankRight = {};
-        topoRanks.forEach(function (r) {
-            topoRankRight[r] = topoLayers[r].reduce(function (max, n) {
-                return Math.max(max, topoPos[n].x + topoPos[n].width);
-            }, 0);
-        });
+            var displayEdges = computeDisplayEdges(displaySet);
+            var loopGap = displayEdges.some(function (e) { return e.isBack; }) ? 90 : 0;
 
-        var backIndex = 0;
+            var width = contentWidth + topoMargin * 2 + loopGap,
+                height = contentHeight + topoMargin * 2;
 
-        function topoLinkPath(d) {
-            var src = topoPos[d.dependency], dst = topoPos[d.consumer];
+            var svgTopo = d3.select("#view-topo").append("svg")
+                .attr("id", "topo")
+                .attr("width", width)
+                .attr("height", height);
 
-            if (!d.isBack) {
-                var x0 = src.x + src.width / 2, y0 = src.y - src.height / 2,
-                    x1 = dst.x + dst.width / 2, y1 = dst.y + dst.height / 2,
-                    mid = (y0 + y1) / 2;
-                return "M" + x0 + "," + y0 + "C" + x0 + "," + mid + " " + x1 + "," + mid + " " + x1 + "," + y1;
+            var defs = svgTopo.append("defs");
+
+            function marker(id, fill) {
+                defs.append("marker")
+                    .attr("id", id)
+                    .attr("viewBox", "0 0 10 10")
+                    .attr("refX", 9).attr("refY", 5)
+                    .attr("markerWidth", 7).attr("markerHeight", 7)
+                    .attr("orient", "auto-start-reverse")
+                    .append("path")
+                    .attr("d", "M0,0L10,5L0,10z")
+                    .style("fill", fill);
             }
 
-            var r1 = topoNodeRank[d.dependency], r2 = topoNodeRank[d.consumer];
-            var lo = Math.min(r1, r2), hi = Math.max(r1, r2);
-            var localRight = 0;
-            for (var r = lo; r <= hi; r++) localRight = Math.max(localRight, topoRankRight[r]);
+            marker("topo-arrow", "#8899a0");
+            marker("topo-arrow-source", "#d6bc27");
+            marker("topo-arrow-target", "#5890e2");
+            marker("topo-arrow-cycle", "#e23d3d");
 
-            var loopX = localRight + 24 + (backIndex++ % 5) * 12;
-            var sx = src.x + src.width / 2, sy = src.y + src.height / 2,
-                tx = dst.x + dst.width / 2, ty = dst.y + dst.height / 2;
-            return "M" + sx + "," + sy +
-                "C" + loopX + "," + sy + " " + loopX + "," + ty + " " + tx + "," + ty;
-        }
+            // Forward edges connect box edges directly, bottom to top, since
+            // lower ranks sit at the bottom. Back/cycle edges (only possible
+            // between members of the same exploded group, since ranking
+            // otherwise runs over a true DAG) loop through a lane just to the
+            // right of whichever rows they span, so short-range cycles get a
+            // short local loop instead of a long detour to the far edge.
+            var rankRight = {};
+            ranks.forEach(function (r) {
+                rankRight[r] = layers[r].reduce(function (max, n) { return Math.max(max, pos[n].x + pos[n].width); }, 0);
+            });
 
-        var topoLinkData = topo.edges.map(function (e) {
-            return {
-                consumer: e.consumer,
-                dependency: e.dependency,
-                isBack: topo.backEdges.indexOf(e) !== -1,
-            };
-        });
+            var backIndex = 0;
 
-        var topoLink = svgTopo.append("g").selectAll(".topo-link")
-            .data(topoLinkData)
-            .enter().append("path")
-            .attr("class", function (d) { return "topo-link" + (d.isBack ? " topo-link--cycle" : ""); })
-            .attr("marker-end", function (d) { return d.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; })
-            .attr("d", topoLinkPath);
+            function linkPath(d) {
+                var src = pos[d.dependency], dst = pos[d.consumer];
 
-        var topoNodeData = topoVisibleNodes.map(function (n) {
-            var parts = topoNameParts(n);
-            return {
-                name: n,
-                title: topoTitle(n),
-                subtitle: parts.prefix,
-                isLeaf: topoIndeg[n] === 0,
-                isCycle: topoCycleNodes.has(n),
-                x: topoPos[n].x, y: topoPos[n].y, width: topoPos[n].width, height: topoPos[n].height,
-            };
-        });
+                if (!d.isBack) {
+                    var x0 = src.x + src.width / 2, y0 = src.y - src.height / 2,
+                        x1 = dst.x + dst.width / 2, y1 = dst.y + dst.height / 2,
+                        mid = (y0 + y1) / 2;
+                    return "M" + x0 + "," + y0 + "C" + x0 + "," + mid + " " + x1 + "," + mid + " " + x1 + "," + y1;
+                }
 
-        var topoNode = svgTopo.append("g").selectAll(".topo-node")
-            .data(topoNodeData)
-            .enter().append("g")
-            .attr("class", function (d) {
-                return "topo-node" + (d.isLeaf ? " topo-node--leaf" : "") + (d.isCycle ? " topo-node--cycle" : "");
-            })
-            .on("mouseover", mouseoveredTopo)
-            .on("mouseout", mouseoutedTopo);
+                var r1 = rankIndex[nodeRank[d.dependency]], r2 = rankIndex[nodeRank[d.consumer]];
+                var lo = Math.min(r1, r2), hi = Math.max(r1, r2), localRight = 0;
+                for (var r = lo; r <= hi; r++) localRight = Math.max(localRight, rankRight[r]);
 
-        topoNode.append("rect")
-            .attr("x", function (d) { return d.x; })
-            .attr("y", function (d) { return d.y - d.height / 2; })
-            .attr("width", function (d) { return d.width; })
-            .attr("height", function (d) { return d.height; })
-            .attr("rx", 4).attr("ry", 4);
+                var loopX = localRight + 24 + (backIndex++ % 5) * 12;
+                var sx = src.x + src.width / 2, sy = src.y + src.height / 2,
+                    tx = dst.x + dst.width / 2, ty = dst.y + dst.height / 2;
+                return "M" + sx + "," + sy + "C" + loopX + "," + sy + " " + loopX + "," + ty + " " + tx + "," + ty;
+            }
 
-        topoNode.append("text")
-            .attr("class", "topo-node-title")
-            .attr("x", function (d) { return d.x + d.width / 2; })
-            .attr("y", function (d) { return d.y - (d.subtitle ? 9 : 0); })
-            .text(function (d) { return d.title; });
+            var topoLink = svgTopo.append("g").selectAll(".topo-link")
+                .data(displayEdges)
+                .enter().append("path")
+                .attr("class", function (d) { return "topo-link" + (d.isBack ? " topo-link--cycle" : ""); })
+                .attr("marker-end", function (d) { return d.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; })
+                .attr("d", linkPath);
 
-        topoNode.filter(function (d) { return d.subtitle; }).append("text")
-            .attr("class", "topo-node-subtitle")
-            .attr("x", function (d) { return d.x + d.width / 2; })
-            .attr("y", function (d) { return d.y + 11; })
-            .text(function (d) { return d.subtitle; });
+            var nodeData = displayNodes.map(function (n) {
+                var isCycle = !!groupInfo[n] || groupOf[n] !== n;
+                return {
+                    name: n,
+                    title: displayTitle(n),
+                    subtitle: displaySubtitle(n),
+                    isLeaf: !groupInfo[n] && topoIndeg[n] === 0,
+                    isGroup: !!groupInfo[n],
+                    isCycle: isCycle,
+                    isExpandable: isExpandable(n),
+                    x: pos[n].x, y: pos[n].y, width: pos[n].width, height: pos[n].height,
+                };
+            });
 
-        function mouseoveredTopo(d) {
-            topoLink
-                .classed("topo-link--target", function (l) { return l.dependency === d.name; })
-                .classed("topo-link--source", function (l) { return l.consumer === d.name; })
-                .attr("marker-end", function (l) {
-                    if (l.isBack) return "url(#topo-arrow-cycle)";
-                    if (l.dependency === d.name) return "url(#topo-arrow-target)";
-                    if (l.consumer === d.name) return "url(#topo-arrow-source)";
-                    return "url(#topo-arrow)";
+            var topoNode = svgTopo.append("g").selectAll(".topo-node")
+                .data(nodeData)
+                .enter().append("g")
+                .attr("class", function (d) {
+                    return "topo-node"
+                        + (d.isLeaf ? " topo-node--leaf" : "")
+                        + (d.isCycle ? " topo-node--cycle" : "")
+                        + (d.isGroup ? " topo-node--group" : "")
+                        + (d.isExpandable ? " topo-node--expandable" : "");
                 })
-                .filter(function (l) { return l.consumer === d.name || l.dependency === d.name; })
-                .raise();
+                .on("mouseover", mouseoveredTopo)
+                .on("mouseout", mouseoutedTopo)
+                .on("click", function (d) { toggleExpand(d.name); });
 
-            topoNode
-                .classed("topo-node--target", function (n) { return n.name !== d.name && topoLinkData.some(function (l) { return l.dependency === n.name && l.consumer === d.name; }); })
-                .classed("topo-node--source", function (n) { return n.name !== d.name && topoLinkData.some(function (l) { return l.consumer === n.name && l.dependency === d.name; }); });
+            topoNode.append("rect")
+                .attr("x", function (d) { return d.x; })
+                .attr("y", function (d) { return d.y - d.height / 2; })
+                .attr("width", function (d) { return d.width; })
+                .attr("height", function (d) { return d.height; })
+                .attr("rx", 4).attr("ry", 4);
 
-            tooltip
-                .text(d.name)
-                .style("visibility", "visible");
+            topoNode.append("text")
+                .attr("class", "topo-node-title")
+                .attr("x", function (d) { return d.x + d.width / 2; })
+                .attr("y", function (d) { return d.y - (d.subtitle ? 9 : 0); })
+                .text(function (d) { return d.title; });
+
+            topoNode.filter(function (d) { return d.subtitle; }).append("text")
+                .attr("class", "topo-node-subtitle")
+                .attr("x", function (d) { return d.x + d.width / 2; })
+                .attr("y", function (d) { return d.y + 11; })
+                .text(function (d) { return d.subtitle; });
+
+            function mouseoveredTopo(d) {
+                topoLink
+                    .classed("topo-link--target", function (l) { return l.dependency === d.name; })
+                    .classed("topo-link--source", function (l) { return l.consumer === d.name; })
+                    .attr("marker-end", function (l) {
+                        if (l.isBack) return "url(#topo-arrow-cycle)";
+                        if (l.dependency === d.name) return "url(#topo-arrow-target)";
+                        if (l.consumer === d.name) return "url(#topo-arrow-source)";
+                        return "url(#topo-arrow)";
+                    })
+                    .filter(function (l) { return l.consumer === d.name || l.dependency === d.name; })
+                    .raise();
+
+                topoNode
+                    .classed("topo-node--target", function (n) { return n.name !== d.name && displayEdges.some(function (l) { return l.dependency === n.name && l.consumer === d.name; }); })
+                    .classed("topo-node--source", function (n) { return n.name !== d.name && displayEdges.some(function (l) { return l.consumer === n.name && l.dependency === d.name; }); });
+
+                tooltip
+                    .text(d.name)
+                    .style("visibility", "visible");
+            }
+
+            function mouseoutedTopo(d) {
+                topoLink
+                    .classed("topo-link--target", false)
+                    .classed("topo-link--source", false)
+                    .attr("marker-end", function (l) { return l.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; });
+
+                topoNode
+                    .classed("topo-node--target", false)
+                    .classed("topo-node--source", false);
+
+                tooltip
+                    .style("visibility", "hidden");
+            }
         }
 
-        function mouseoutedTopo(d) {
-            topoLink
-                .classed("topo-link--target", false)
-                .classed("topo-link--source", false)
-                .attr("marker-end", function (l) { return l.isBack ? "url(#topo-arrow-cycle)" : "url(#topo-arrow)"; });
+        if (groupCount > 0) {
+            legend.attr("height", 108);
+            legend.append("circle")
+                .attr("cx", 10).attr("cy", 52).attr("r", 6)
+                .style("fill", "#e23d3d")
+            legend.append("text")
+                .attr("x", 30).attr("y", 52)
+                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
+                .text("cycle").style("font-size", "11px")
 
-            topoNode
-                .classed("topo-node--target", false)
-                .classed("topo-node--source", false);
+            legend.append("rect")
+                .attr("x", 4).attr("y", 66).attr("width", 12).attr("height", 12).attr("rx", 2)
+                .style("fill", "#3a1f1f").style("stroke", "#e23d3d")
+            legend.append("text")
+                .attr("x", 30).attr("y", 72)
+                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
+                .text("in a cycle").style("font-size", "11px")
 
-            tooltip
-                .style("visibility", "hidden");
+            legend.append("rect")
+                .attr("x", 4).attr("y", 86).attr("width", 12).attr("height", 12).attr("rx", 2)
+                .style("fill", "#24393a").style("stroke", "#6d8f90").style("stroke-dasharray", "3,2")
+            legend.append("text")
+                .attr("x", 30).attr("y", 92)
+                .attr("alignment-baseline", "middle").attr("fill", "#bbb")
+                .text("cycle group — click to expand").style("font-size", "11px")
         }
+
+        renderTopo(computeDisplaySet(computeReachable()));
 
     </script>
 </body>
